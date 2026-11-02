@@ -9,9 +9,12 @@ email-validator==2.2.0
 sse-starlette==2.2.1
 pydantic>=2.11
 rank-bm25==0.2.2
-anyio==4.9.0
-PyJWT==2.10.1
+anyio>=4.14.2,<5
+PyJWT>=2.15.0,<3
 mcp>=1.18.0,<2
 websockets>=15.0.1
 httpx[http2]>=0.27.2
 pypdf>=6.0.0
+# Security floors for transitive deps (via huggingface-hub); see pip-audit.
+httpx2>=2.12.0
+httpcore2>=2.10.0

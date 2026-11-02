@@ -27,10 +27,17 @@ ARG INSTALL_TYPE=default
 ARG ENABLE_GPU=false
 ARG TARGETARCH
 
-# Redis version — pinned to a CVE-patched release by default.
+# Redis version — pinned to a CVE-patched release on the BSD-licensed 7.2 line.
+# 7.2.7 (the previous pin) is affected by CVE-2025-49844 ("RediShell", Lua
+# use-after-free RCE), CVE-2025-46817/46818/46819, CVE-2025-32023,
+# CVE-2025-48367 and CVE-2025-21605; 7.2.11+ fixes them.
 # Override with --build-arg REDIS_VERSION="" for latest, or
-# --build-arg REDIS_VERSION="6:7.2.7-1rl1~bookworm1" for a specific version.
-ARG REDIS_VERSION="6:7.2.7-1rl1~bookworm1"
+# --build-arg REDIS_VERSION="6:7.2.17-1rl1~bookworm1" for a specific version.
+ARG REDIS_VERSION="6:7.2.17-1rl1~bookworm1"
+# Fingerprint of the Redis package signing key ("Redis (Package Signing)
+# <redis-packages@redis.io>"). The build fails if packages.redis.io serves a
+# different key, so a tampered key download cannot authorize packages.
+ARG REDIS_GPG_FINGERPRINT=54318FA4052D1E61A6B6F7BB5F4349D6BF53AA0C
 
 LABEL maintainer="unclecode"
 LABEL description="🔥🕷️ Crawl4AI: Open-source LLM Friendly Web Crawler & scraper"
@@ -40,8 +47,15 @@ LABEL version="1.0"
 RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Add official Redis repository for security-patched versions
-RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg \
+# Add official Redis repository for security-patched versions. The signing key
+# is verified against the pinned fingerprint before apt is allowed to trust it.
+RUN curl -fsSL --proto '=https' --tlsv1.2 https://packages.redis.io/gpg -o /tmp/redis.asc \
+    && actual="$(gpg --show-keys --with-colons /tmp/redis.asc | awk -F: '/^fpr:/{print $10; exit}')" \
+    && if [ "$actual" != "$REDIS_GPG_FINGERPRINT" ]; then \
+         echo "Redis signing key fingerprint mismatch: got '$actual', want '$REDIS_GPG_FINGERPRINT'" >&2; exit 1; \
+       fi \
+    && gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg /tmp/redis.asc \
+    && rm -f /tmp/redis.asc \
     && echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb bookworm main" \
     > /etc/apt/sources.list.d/redis.list
 
@@ -58,7 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     redis-tools${REDIS_VERSION:+=$REDIS_VERSION} \
     redis-server${REDIS_VERSION:+=$REDIS_VERSION} \
     supervisor \
-    && apt-get clean \ 
+    && if [ -n "$REDIS_VERSION" ]; then apt-mark hold redis-server redis-tools; fi \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -86,6 +101,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \ 
     && rm -rf /var/lib/apt/lists/*
 
+# Held packages (the pinned Redis) are not touched; without the hold above this
+# step silently replaced the pinned Redis with the repo's newest major.
 RUN apt-get update && apt-get dist-upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -175,7 +192,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 RUN crawl4ai-setup
 
-RUN playwright install --with-deps
+# Only Chromium is used (and only Chromium is copied to appuser below); the
+# Firefox/WebKit builds were unreachable dead weight that still had to be patched.
+RUN playwright install --with-deps chromium
 
 RUN mkdir -p /home/appuser/.cache/ms-playwright \
     && cp -r /root/.cache/ms-playwright/chromium-* \
@@ -184,6 +203,17 @@ RUN mkdir -p /home/appuser/.cache/ms-playwright \
     && chown -R appuser:appuser /home/appuser/.cache/ms-playwright
 
 RUN crawl4ai-doctor
+
+# Remove the build-time source copy and installer (they are not needed at
+# runtime) and the compiler toolchain / VCS / downloaders used only to build:
+# a foothold in the container should not come with gcc, git and wget.
+# (root's Playwright cache is only needed by crawl4ai-doctor above; appuser
+# has its own copy.)
+RUN rm -rf /tmp/project /tmp/crawl4ai /tmp/install.sh /root/.cache/ms-playwright \
+    && apt-get purge -y --auto-remove \
+        build-essential cmake pkg-config python3-dev git wget gnupg \
+    && rm -rf /var/lib/apt/lists/* /root/.cache/pip \
+    && python -c "import crawl4ai, playwright, redis, gunicorn; print('✅ runtime imports OK after toolchain purge')"
 
 # Ensure all cache directories belong to appuser
 # This fixes permission issues with .cache/url_seeder and other runtime cache dirs

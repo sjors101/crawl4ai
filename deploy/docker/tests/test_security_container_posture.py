@@ -73,6 +73,56 @@ class TestDockerfile:
     def test_runs_as_non_root(self, dockerfile):
         assert re.search(r"^USER\s+appuser", dockerfile, re.MULTILINE)
 
+    def test_redis_pinned_past_rediShell(self, dockerfile):
+        # 7.2.7 is vulnerable to CVE-2025-49844 (Lua UAF RCE) et al.; the 7.2
+        # line is fixed from 7.2.11.
+        m = re.search(r'ARG REDIS_VERSION="6:7\.2\.(\d+)-', dockerfile)
+        assert m, "Redis must stay pinned to a 7.2.x release"
+        assert int(m.group(1)) >= 11
+
+    def test_redis_pin_survives_dist_upgrade(self, dockerfile):
+        # dist-upgrade used to replace the pinned 7.2.x with the newest major.
+        assert "apt-mark hold redis-server redis-tools" in dockerfile
+        assert dockerfile.index("apt-mark hold") < dockerfile.index("dist-upgrade -y")
+
+    def test_redis_signing_key_fingerprint_verified(self, dockerfile):
+        assert "ARG REDIS_GPG_FINGERPRINT=54318FA4052D1E61A6B6F7BB5F4349D6BF53AA0C" in dockerfile
+        assert '"$actual" != "$REDIS_GPG_FINGERPRINT"' in dockerfile
+        assert "curl -fsSL https://packages.redis.io/gpg | gpg --dearmor" not in dockerfile
+
+    def test_build_source_and_toolchain_removed(self, dockerfile):
+        assert "rm -rf /tmp/project" in dockerfile
+        purge = re.search(r"apt-get purge -y --auto-remove(?P<pkgs>[^&]*)", dockerfile)
+        assert purge, "build toolchain must be purged from the runtime image"
+        for pkg in ("build-essential", "git", "wget", "python3-dev"):
+            assert pkg in purge.group("pkgs")
+
+    def test_only_chromium_installed(self, dockerfile):
+        assert re.search(r"playwright install --with-deps chromium\b", dockerfile)
+
+
+class TestDockerignore:
+    """Docker reads .dockerignore only from the build-context root (".")."""
+
+    @pytest.fixture(scope="class")
+    def dockerignore(self):
+        path = os.path.join(REPO_ROOT, ".dockerignore")
+        assert os.path.exists(path), "root .dockerignore is required (context is '.')"
+        return [l.strip() for l in _read(path).splitlines()
+                if l.strip() and not l.lstrip().startswith("#")]
+
+    def test_default_deny(self, dockerignore):
+        assert dockerignore[0] == "*"
+
+    def test_secrets_and_vcs_excluded(self, dockerignore):
+        for pat in ("**/.env", "**/.env.*", "**/*.env", "**/.git",
+                    "**/.claude", "deploy/docker/tests/"):
+            assert pat in dockerignore, pat
+
+    def test_no_stale_nested_dockerignore(self):
+        # A nested copy is silently ignored and gives false assurance.
+        assert not os.path.exists(os.path.join(DOCKER_DIR, ".dockerignore"))
+
 
 class TestSupervisord:
     def test_redis_requires_password(self, supervisord):

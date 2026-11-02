@@ -1,0 +1,57 @@
+# Build-context allowlist for the root Dockerfile (context: ".").
+#
+# Docker only reads the .dockerignore at the ROOT of the build context, so this
+# file must live here (a copy under deploy/docker/ is silently ignored). Without
+# it, `COPY . /tmp/project/` and `COPY deploy/docker/* /app/` baked .git, local
+# secrets (.env, .llm.env), agent/IDE state and the test suite into the image.
+
+# Deny everything, then allow only what the image build needs.
+*
+!crawl4ai/
+!deploy/docker/
+!setup.py
+!setup.cfg
+!pyproject.toml
+!MANIFEST.in
+!requirements.txt
+!README.md
+!LICENSE
+
+# Secrets must never enter the context, even inside allowed directories.
+**/.env
+**/.env.*
+**/*.env
+!deploy/docker/.llm.env.example
+**/.secrets
+**/secrets/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.netrc
+**/.pypirc
+**/.npmrc
+
+# Tests, tooling and build/editor debris.
+deploy/docker/tests/
+deploy/docker/test-websocket.py
+**/.git
+**/.github
+**/.claude
+**/.context
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+**/build
+**/dist
+**/*.log
+**/*.swp
+**/.DS_Store
+**/coverage.xml
