@@ -71,7 +71,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev \
     redis-tools${REDIS_VERSION:+=$REDIS_VERSION} \
     redis-server${REDIS_VERSION:+=$REDIS_VERSION} \
-    supervisor \
     && if [ -n "$REDIS_VERSION" ]; then apt-mark hold redis-server redis-tools; fi \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -210,10 +209,13 @@ RUN crawl4ai-doctor
 # (root's Playwright cache is only needed by crawl4ai-doctor above; appuser
 # has its own copy.)
 RUN rm -rf /tmp/project /tmp/crawl4ai /tmp/install.sh /root/.cache/ms-playwright \
+    && apt-mark manual $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' \
+         'libjpeg62-turbo' 'libopenblas0*' 'libomp5*' 2>/dev/null | awk '$1 == "ii" {print $2}') \
     && apt-get purge -y --auto-remove \
         build-essential cmake pkg-config python3-dev git wget gnupg \
+        libjpeg-dev libopenblas-dev libomp-dev libc6-dev linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip \
-    && python -c "import crawl4ai, playwright, redis, gunicorn; print('✅ runtime imports OK after toolchain purge')"
+    && python -c "import crawl4ai, playwright, redis, gunicorn, supervisor; print('✅ runtime imports OK after toolchain purge')"
 
 # Ensure all cache directories belong to appuser
 # This fixes permission issues with .cache/url_seeder and other runtime cache dirs

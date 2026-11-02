@@ -97,6 +97,17 @@ class TestDockerfile:
         for pkg in ("build-essential", "git", "wget", "python3-dev"):
             assert pkg in purge.group("pkgs")
 
+    def test_kernel_headers_and_dev_packages_purged(self, dockerfile):
+        purge = re.search(r"apt-get purge -y --auto-remove(?P<pkgs>[^&]*)", dockerfile)
+        for pkg in ("linux-libc-dev", "libc6-dev", "libjpeg-dev"):
+            assert pkg in purge.group("pkgs")
+
+    def test_supervisor_not_from_apt(self, dockerfile):
+        # apt's supervisor pulls in Debian's python3.11 (a second interpreter).
+        assert not re.search(r"^\s+supervisor\s*\\?$", dockerfile, re.MULTILINE)
+        reqs = _read(os.path.join(DOCKER_DIR, "requirements.txt"))
+        assert re.search(r"^supervisor>=", reqs, re.MULTILINE)
+
     def test_only_chromium_installed(self, dockerfile):
         assert re.search(r"playwright install --with-deps chromium\b", dockerfile)
 
