@@ -206,6 +206,10 @@ RUN crawl4ai-doctor
 # Remove the build-time source copy and installer (they are not needed at
 # runtime) and the compiler toolchain / VCS / downloaders used only to build:
 # a foothold in the container should not come with gcc, git and wget.
+# pip is removed too: nothing calls it at runtime, and it ships vendored
+# urllib3/msgpack/setuptools copies with open CVEs. To extend this image with
+# extra packages, do it in a multi-stage build (or re-add pip via get-pip.py)
+# in your own Dockerfile.
 # (root's Playwright cache is only needed by crawl4ai-doctor above; appuser
 # has its own copy.)
 RUN rm -rf /tmp/project /tmp/crawl4ai /tmp/install.sh /root/.cache/ms-playwright \
@@ -215,7 +219,10 @@ RUN rm -rf /tmp/project /tmp/crawl4ai /tmp/install.sh /root/.cache/ms-playwright
         build-essential cmake pkg-config python3-dev git wget gnupg \
         libjpeg-dev libopenblas-dev libomp-dev libc6-dev linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip \
-    && python -c "import crawl4ai, playwright, redis, gunicorn, supervisor; print('✅ runtime imports OK after toolchain purge')"
+    && python -c "import crawl4ai, playwright, redis, gunicorn, supervisor; print('✅ runtime imports OK after toolchain purge')" \
+    && python -m pip uninstall -y pip \
+    && rm -rf /usr/local/lib/python3.12/ensurepip \
+    && ! python -c "import pip" 2>/dev/null
 
 # Ensure all cache directories belong to appuser
 # This fixes permission issues with .cache/url_seeder and other runtime cache dirs

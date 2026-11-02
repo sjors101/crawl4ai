@@ -108,6 +108,10 @@ class TestDockerfile:
         reqs = _read(os.path.join(DOCKER_DIR, "requirements.txt"))
         assert re.search(r"^supervisor>=", reqs, re.MULTILINE)
 
+    def test_pip_removed_from_runtime(self, dockerfile):
+        assert "python -m pip uninstall -y pip" in dockerfile
+        assert dockerfile.index("pip uninstall -y pip") > dockerfile.rindex("pip install")
+
     def test_only_chromium_installed(self, dockerfile):
         assert re.search(r"playwright install --with-deps chromium\b", dockerfile)
 
