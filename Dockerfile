@@ -1,4 +1,6 @@
-FROM python:3.12-slim-bookworm AS build
+# Debian 13 "trixie": bookworm is on LTS and many CVEs (util-linux, Xorg, ...)
+# are only fixed in trixie.
+FROM python:3.12-slim-trixie AS build
 
 # C4ai version
 ARG C4AI_VER=0.9.5
@@ -27,10 +29,17 @@ ARG INSTALL_TYPE=default
 ARG ENABLE_GPU=false
 ARG TARGETARCH
 
-# Redis version — pinned to a CVE-patched release by default.
+# Redis version — pinned to a CVE-patched release on the BSD-licensed 7.2 line.
+# 7.2.7 (the previous pin) is affected by CVE-2025-49844 ("RediShell", Lua
+# use-after-free RCE), CVE-2025-46817/46818/46819, CVE-2025-32023,
+# CVE-2025-48367 and CVE-2025-21605; 7.2.11+ fixes them.
 # Override with --build-arg REDIS_VERSION="" for latest, or
-# --build-arg REDIS_VERSION="6:7.2.7-1rl1~bookworm1" for a specific version.
-ARG REDIS_VERSION="6:7.2.7-1rl1~bookworm1"
+# --build-arg REDIS_VERSION="6:7.2.17-1rl1~trixie1" for a specific version.
+ARG REDIS_VERSION="6:7.2.17-1rl1~trixie1"
+# Fingerprint of the Redis package signing key ("Redis (Package Signing)
+# <redis-packages@redis.io>"). The build fails if packages.redis.io serves a
+# different key, so a tampered key download cannot authorize packages.
+ARG REDIS_GPG_FINGERPRINT=54318FA4052D1E61A6B6F7BB5F4349D6BF53AA0C
 
 LABEL maintainer="unclecode"
 LABEL description="🔥🕷️ Crawl4AI: Open-source LLM Friendly Web Crawler & scraper"
@@ -40,9 +49,16 @@ LABEL version="1.0"
 RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Add official Redis repository for security-patched versions
-RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb bookworm main" \
+# Add official Redis repository for security-patched versions. The signing key
+# is verified against the pinned fingerprint before apt is allowed to trust it.
+RUN curl -fsSL --proto '=https' --tlsv1.2 https://packages.redis.io/gpg -o /tmp/redis.asc \
+    && actual="$(gpg --show-keys --with-colons /tmp/redis.asc | awk -F: '/^fpr:/{print $10; exit}')" \
+    && if [ "$actual" != "$REDIS_GPG_FINGERPRINT" ]; then \
+         echo "Redis signing key fingerprint mismatch: got '$actual', want '$REDIS_GPG_FINGERPRINT'" >&2; exit 1; \
+       fi \
+    && gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg /tmp/redis.asc \
+    && rm -f /tmp/redis.asc \
+    && echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb trixie main" \
     > /etc/apt/sources.list.d/redis.list
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -57,17 +73,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg-dev \
     redis-tools${REDIS_VERSION:+=$REDIS_VERSION} \
     redis-server${REDIS_VERSION:+=$REDIS_VERSION} \
-    supervisor \
-    && apt-get clean \ 
+    && if [ -n "$REDIS_VERSION" ]; then apt-mark hold redis-server redis-tools; fi \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 \
+    libglib2.0-0t64 \
     libnss3 \
     libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
+    libatk1.0-0t64 \
+    libatk-bridge2.0-0t64 \
+    libcups2t64 \
     libdrm2 \
     libdbus-1-3 \
     libxcb1 \
@@ -81,16 +97,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgbm1 \
     libpango-1.0-0 \
     libcairo2 \
-    libasound2 \
-    libatspi2.0-0 \
+    libasound2t64 \
+    libatspi2.0-0t64 \
     && apt-get clean \ 
     && rm -rf /var/lib/apt/lists/*
 
+# Held packages (the pinned Redis) are not touched; without the hold above this
+# step silently replaced the pinned Redis with the repo's newest major.
 RUN apt-get update && apt-get dist-upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ "$ENABLE_GPU" = "true" ] && [ "$TARGETARCH" = "amd64" ] ; then \
-    echo "deb http://deb.debian.org/debian bookworm contrib non-free" >> /etc/apt/sources.list \
+    echo "deb http://deb.debian.org/debian trixie contrib non-free" >> /etc/apt/sources.list \
     && apt-get update && apt-get install -y --no-install-recommends \
     nvidia-cuda-toolkit \
     && apt-get clean \
@@ -175,7 +193,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 RUN crawl4ai-setup
 
-RUN playwright install --with-deps
+# Only Chromium is used (and only Chromium is copied to appuser below); the
+# Firefox/WebKit builds were unreachable dead weight that still had to be patched.
+RUN playwright install --with-deps chromium
 
 RUN mkdir -p /home/appuser/.cache/ms-playwright \
     && cp -r /root/.cache/ms-playwright/chromium-* \
@@ -184,6 +204,24 @@ RUN mkdir -p /home/appuser/.cache/ms-playwright \
     && chown -R appuser:appuser /home/appuser/.cache/ms-playwright
 
 RUN crawl4ai-doctor
+
+# Remove the build-time source copy and installer (they are not needed at
+# runtime) and the compiler toolchain / VCS / downloaders used only to build:
+# a foothold in the container should not come with gcc, git and wget.
+# Xvfb/X server: pulled in by `playwright install --with-deps` for headed mode,
+# which nothing here starts (no DISPLAY). curl: only used to fetch the Redis key
+# at build time; the healthchecks use Python instead.
+# (root's Playwright cache is only needed by crawl4ai-doctor above; appuser
+# has its own copy.)
+RUN rm -rf /tmp/project /tmp/crawl4ai /tmp/install.sh /root/.cache/ms-playwright \
+    && apt-mark manual $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' \
+         'libjpeg62-turbo' 'libopenblas0*' 'libomp5*' 2>/dev/null | awk '$1 == "ii" {print $2}') \
+    && apt-get purge -y --auto-remove \
+        build-essential cmake pkg-config python3-dev git wget gnupg \
+        libjpeg-dev libopenblas-dev libomp-dev libc6-dev linux-libc-dev \
+        xvfb xserver-common xauth curl \
+    && rm -rf /var/lib/apt/lists/* /root/.cache/pip \
+    && python -c "import crawl4ai, playwright, redis, gunicorn, supervisor; print('✅ runtime imports OK after toolchain purge')"
 
 # Ensure all cache directories belong to appuser
 # This fixes permission issues with .cache/url_seeder and other runtime cache dirs
@@ -208,15 +246,10 @@ RUN mkdir -p /var/lib/crawl4ai/outputs \
     && chown -R appuser:appuser /var/lib/crawl4ai \
     && chmod 700 /var/lib/crawl4ai/outputs
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD bash -c '\
-    MEM=$(free -m | awk "/^Mem:/{print \$2}"); \
-    if [ $MEM -lt 2048 ]; then \
-        echo "⚠️ Warning: Less than 2GB RAM available! Your container might need a memory boost! 🚀"; \
-        exit 1; \
-    fi && \
-    redis-cli ping > /dev/null && \
-    curl -f http://localhost:11235/health || exit 1'
+# Python, not curl (curl is purged above). /health covers the app; redis
+# requires a password, so an unauthenticated `redis-cli ping` proved nothing.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('CRAWL4AI_PORT','11235'), timeout=5).status == 200 else 1)"]
 
 # Redis is in-container only (loopback + requirepass); never expose its port.
 # (was: EXPOSE 6379)
