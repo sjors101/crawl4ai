@@ -76,7 +76,7 @@ class TestDockerfile:
     def test_redis_pinned_past_rediShell(self, dockerfile):
         # 7.2.7 is vulnerable to CVE-2025-49844 (Lua UAF RCE) et al.; the 7.2
         # line is fixed from 7.2.11.
-        m = re.search(r'ARG REDIS_VERSION="6:7\.2\.(\d+)-', dockerfile)
+        m = re.search(r'ARG REDIS_VERSION="6:7\.2\.(\d+)-1rl1~trixie1"', dockerfile)
         assert m, "Redis must stay pinned to a 7.2.x release"
         assert int(m.group(1)) >= 11
 
@@ -107,6 +107,24 @@ class TestDockerfile:
         assert not re.search(r"^\s+supervisor\s*\\?$", dockerfile, re.MULTILINE)
         reqs = _read(os.path.join(DOCKER_DIR, "requirements.txt"))
         assert re.search(r"^supervisor>=", reqs, re.MULTILINE)
+
+    def test_trixie_base(self, dockerfile):
+        # bookworm is on LTS; util-linux/Xorg/... CVEs are only fixed in trixie.
+        assert re.search(r"^FROM python:3\.12-slim-trixie\b", dockerfile, re.MULTILINE)
+        assert "packages.redis.io/deb trixie main" in dockerfile
+        active = [l for l in dockerfile.splitlines() if not l.strip().startswith("#")]
+        assert not any("bookworm" in l for l in active)
+
+    def test_unused_xserver_and_curl_purged(self, dockerfile):
+        purge = re.search(r"apt-get purge -y --auto-remove(?P<pkgs>[^&]*)", dockerfile)
+        for pkg in ("xvfb", "xserver-common", "curl"):
+            assert re.search(rf"\b{pkg}\b", purge.group("pkgs")), pkg
+
+    def test_healthcheck_does_not_need_curl(self, dockerfile, compose):
+        hc = dockerfile[dockerfile.index("HEALTHCHECK"):]
+        hc = hc[:hc.index("\n\n")]
+        assert "curl" not in hc and "urllib.request" in hc
+        assert '"curl"' not in compose
 
     def test_only_chromium_installed(self, dockerfile):
         assert re.search(r"playwright install --with-deps chromium\b", dockerfile)
