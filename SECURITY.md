@@ -191,7 +191,7 @@ Secure-by-default rework of the Docker API server. The pip library is unchanged.
 
 | ID | Severity | Component | Description | Fix |
 |----|----------|-----------|-------------|-----|
-| CVE-2025-49844 | CRITICAL (10.0) | Docker (Redis) | Lua use-after-free in bundled Redis | Redis upgraded to 7.2.7 |
+| CVE-2025-49844 | CRITICAL (10.0) | Docker (Redis) | Lua use-after-free in bundled Redis | Redis pinned (and held) at 7.2.17; fixed from 7.2.11 — the earlier 7.2.7 pin was still vulnerable |
 | - | MEDIUM | Library | XSS via `innerHTML` in iframe processing | `DOMParser` used instead (#1796) |
 | - | MEDIUM | Docker API | `/token` endpoint issued tokens without checking `api_token` | `api_token` required when configured (#1795) |
 
